@@ -1,20 +1,29 @@
 {
-  email {$CADDY_EMAIL}
+  email {$CADDY_EMAIL:you@example.com}
 }
 
+{$CADDY_DOMAIN:your.domain.example.com} {
+  # Spoof Apache headers
+  header Server "Apache/2.4.59 (Ubuntu)"
+  header X-Powered-By "PHP/8.2.0"
+  header -X-Content-Type-Options
 
-xa0s.freeddns.org {
-  # Edge Management API — more specific, must come FIRST
-  handle /edge/management/* {
-    reverse_proxy https://ziti-controller:38441 {
-      transport http {
-        tls_insecure_skip_verify
-      }
-    }
+  # Basic auth gate before ZAC
+  basicauth {
+    {$CADDY_BASIC_USER} {$CADDY_BASIC_HASH}
   }
 
-  # ZAC UI — catch-all, goes last
-  handle {
-    reverse_proxy http://ziti-console:8080
+  reverse_proxy http://ziti-console:8080
+
+  # Fake Apache 401 error page
+  handle_errors 401 {
+    header Content-Type "text/html; charset=iso-8859-1"
+    respond `<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head><title>401 Authorization Required</title></head><body>
+<h1>Authorization Required</h1>
+<p>This server could not verify that you are authorized to access the document requested. Either you supplied the wrong credentials (e.g., bad password), or your browser doesn't understand how to supply the credentials required.</p>
+<hr>
+<address>Apache/2.4.59 (Ubuntu) Server at {$CADDY_DOMAIN} Port 443</address>
+</body></html>` 401
   }
 }

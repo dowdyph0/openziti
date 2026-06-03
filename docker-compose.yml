@@ -1,54 +1,25 @@
 services:
 
   # ─────────────────────────────────────────────────────────────────
-  # Creates root and intermediate CAs with 30-year validity.
-  # Only runs on first boot (when the volume is empty).
-  # On subsequent starts it detects existing PKI and exits immediately.
+  # Fix volume ownership so ziggy (uid 2171) can write to it.
+  # Runs once before the controller starts (official pattern).
   # ─────────────────────────────────────────────────────────────────
-  ziti-pki-init:
-    image: openziti/ziti-cli:latest
-    user: root
+  chown-controller:
+    image: busybox
+    command: chown -R 2171 /ziti-controller
     volumes:
       - ziti-controller:/ziti-controller
-    environment:
-      ZITI_PKI_EXPIRE_LIMIT: ${ZITI_PKI_EXPIRE_LIMIT:-3650}
-    entrypoint:
-      - sh
-      - -euc
-      - |
-        if [ -f /ziti-controller/pki/root/certs/root.cert ]; then
-          echo "[pki-init] PKI already exists, skipping."
-          exit 0
-        fi
-        EXPIRE_LIMIT=${ZITI_PKI_EXPIRE_LIMIT:-3650}
-        echo "[pki-init] Generating PKI with expire-limit=${EXPIRE_LIMIT} days..."
-        mkdir -p /ziti-controller/pki
-        # Root CA
-        ziti pki create ca \
-          --pki-root /ziti-controller/pki \
-          --ca-file  root \
-          --ca-name  "OpenZiti Root CA" \
-          --expire-limit "${EXPIRE_LIMIT}"
-        # Intermediate / signing CA
-        ziti pki create intermediate \
-          --pki-root         /ziti-controller/pki \
-          --ca-name          root \
-          --intermediate-file intermediate \
-          --intermediate-name "OpenZiti Intermediate CA" \
-          --expire-limit "${EXPIRE_LIMIT}"
-        # Transfer ownership to ziggy uid (2171)
-        chown -R 2171:2171 /ziti-controller/pki
-        echo "[pki-init] PKI generated successfully."
 
   # ─────────────────────────────────────────────────────────────────
   # OpenZiti Controller
-  # Bootstrap detects existing PKI → only generates config, DB and leaf certs.
+  # Runs in single-node cluster mode (always, by design).
+  # Bootstrap creates a SPIFFE-aware PKI, config and DB on first run.
   # ZITI_AUTO_RENEW_CERTS=true renews leaf certs on every restart.
   # ─────────────────────────────────────────────────────────────────
   ziti-controller:
     image: openziti/ziti-controller:latest
     depends_on:
-      ziti-pki-init:
+      chown-controller:
         condition: service_completed_successfully
     env_file:
       - ./.env
@@ -59,17 +30,8 @@ services:
       ZITI_PWD:                     ${ZITI_PWD}
       ZITI_EDGE_IDENTITY_ENROLLMENT_DURATION: ${ZITI_EDGE_IDENTITY_ENROLLMENT_DURATION:-10080}
       ZITI_ROUTER_ENROLLMENT_DURATION:        ${ZITI_ROUTER_ENROLLMENT_DURATION:-10080}
-      ZITI_BOOTSTRAP:          "true"
-      ZITI_BOOTSTRAP_PKI:      "true"
-      ZITI_BOOTSTRAP_CONFIG:   "true"
-      ZITI_BOOTSTRAP_DATABASE: "true"
-      ZITI_AUTO_RENEW_CERTS:   "true"
-      ZITI_PKI_ROOT:          pki
-      ZITI_CA_FILE:           root
-      ZITI_INTERMEDIATE_FILE: intermediate
     ports:
       - ${ZITI_INTERFACE:-0.0.0.0}:${ZITI_CTRL_ADVERTISED_PORT:-38440}:${ZITI_CTRL_ADVERTISED_PORT:-38440}
-      - ${ZITI_INTERFACE:-0.0.0.0}:${ZITI_CTRL_EDGE_ADVERTISED_PORT:-38441}:${ZITI_CTRL_EDGE_ADVERTISED_PORT:-38441}
     volumes:
       - ziti-controller:/ziti-controller
     networks:
@@ -105,10 +67,6 @@ services:
       ZITI_ENROLL_TOKEN:              ${ZITI_ENROLL_TOKEN:-}
       ZITI_ROUTER_TYPE:               edge
       ZITI_ROUTER_MODE:               host
-      ZITI_BOOTSTRAP:            "true"
-      ZITI_BOOTSTRAP_CONFIG:     "true"
-      ZITI_BOOTSTRAP_ENROLLMENT: "true"
-      ZITI_AUTO_RENEW_CERTS:     "true"
     ports:
       - ${ZITI_INTERFACE:-0.0.0.0}:${ZITI_ROUTER_PORT:-38442}:${ZITI_ROUTER_PORT:-38442}
     volumes:
@@ -127,15 +85,15 @@ services:
   # Web console (ZAC) — served over internal HTTP, Caddy handles TLS
   # ─────────────────────────────────────────────────────────────────
   ziti-console:
+    env_file:
+      - ./.env
     image: openziti/zac:latest
     depends_on:
       ziti-controller:
         condition: service_healthy
     environment:
       PORT:                              "8080"
-      ZITI_CTRL_EDGE_ADVERTISED_ADDRESS: ${ZITI_CTRL_EDGE_ADVERTISED_ADDRESS}
-      ZITI_CTRL_EDGE_ADVERTISED_PORT:    ${ZITI_CTRL_EDGE_ADVERTISED_PORT:-38441}
-      ZAC_CONTROLLER_URLS:               ${ZAC_CONTROLLER_URLS:-https://ziti-controller:38441}
+      ZAC_CONTROLLER_URLS:               ${ZAC_CONTROLLER_URLS}
     networks:
       - ziti
     restart: unless-stopped
@@ -147,6 +105,11 @@ services:
     image: caddy:2
     depends_on:
       - ziti-console
+    env_file:
+      - ./.env
+    environment:
+      CADDY_EMAIL: ${CADDY_EMAIL}
+      CADDY_DOMAIN: ${CADDY_DOMAIN}
     ports:
       - "80:80"
       - "443:443"
