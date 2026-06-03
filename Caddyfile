@@ -1,0 +1,20 @@
+{
+  email {$CADDY_EMAIL}
+}
+
+
+xa0s.freeddns.org {
+  # Edge Management API — more specific, must come FIRST
+  handle /edge/management/* {
+    reverse_proxy https://ziti-controller:38441 {
+      transport http {
+        tls_insecure_skip_verify
+      }
+    }
+  }
+
+  # ZAC UI — catch-all, goes last
+  handle {
+    reverse_proxy http://ziti-console:8080
+  }
+}
